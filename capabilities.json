@@ -1,6 +1,6 @@
 {
-  "student": "REPLACE_ME, REPLACE_STUDENT_ID",
-  "repo": "https://github.com/REPLACE_ME/inboxhero",
+  "student": "Sahaja Kosaraju",
+  "repo": "https://github.com/sahajakosaraju/inboxHero",
   "system": {
     "framework": "none — a small MCP tool bus with a rule-first agent policy",
     "model": "LiteLLM proxy (configured via .env: LITELLM_BASE_URL, LITELLM_API_KEY, MODEL); default gpt-4.1. Falls back to a deterministic policy when .env is absent so the demo works offline.",
