@@ -1,0 +1,2 @@
+litellm>=1.60
+requests>=2.32

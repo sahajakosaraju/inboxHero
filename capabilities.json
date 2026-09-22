@@ -1,0 +1,134 @@
+{
+  "student": "REPLACE_ME, REPLACE_STUDENT_ID",
+  "repo": "https://github.com/REPLACE_ME/inboxhero",
+  "system": {
+    "framework": "none — a small MCP tool bus with a rule-first agent policy",
+    "model": "LiteLLM proxy (configured via .env: LITELLM_BASE_URL, LITELLM_API_KEY, MODEL); default gpt-4.1. Falls back to a deterministic policy when .env is absent so the demo works offline.",
+    "messages_processed": 100,
+    "classification_route": "100% rules (the LLM is never asked to choose a disposition; every disposition comes from the deterministic policy in inboxhero/agent.py)",
+    "drafting_route": {
+      "rule": 97,
+      "llm_assisted": 3,
+      "note": "Of the 6 messages classified as 'reply', 3 had their body drafted by the LLM (Hartwell & Cho legal: m018, m048, m055) and 3 used rule-produced bodies (staging m005, m008; investor decline m043). The 94 non-reply dispositions never touched the LLM."
+    },
+    "dispositions": ["reply", "archive", "defer", "delegate", "escalate", "flagged"],
+    "retrieval": "thread-walk (via the get_thread MCP tool); search_inbox is available as a cross-thread fallback. When retrieval finds nothing, the agent logs a 'not_grounded' event and refuses to draft (Part 3 rule 4).",
+    "irreversible": ["send_message", "delete_message"],
+    "reversible": ["draft_reply", "archive_message", "defer_message", "delegate_message", "escalate_message", "label_message", "flag_message"],
+    "reversibility_rationale": {
+      "delete_is_irreversible": "The mock inbox has no trash / undo; once a message id is marked deleted its content is gone. Treating delete as irreversible costs one approval prompt per delete but removes any way an injection could quietly erase evidence of itself.",
+      "archive_is_reversible": "Archive only changes disposition; the message body stays on disk in inbox.json and its actions.json entry can be flipped back to 'escalate' by editing one JSON value.",
+      "draft_is_reversible": "Drafts live in state/outbox/<msg_id>.json and can be rewritten or deleted before send_message runs."
+    },
+    "gate": "both \u2014 prompt-y/n by default, --dry-run for observability, and every gated decision (proposed tool, args summary, reason, human's answer, approved/denied) is logged as a 'gate' event in state/trace.jsonl. Executed calls are followed by a 'gate_executed' event.",
+    "send_invariant": "send_message is the ONLY tool that writes a sent-*.json file. Every send lands in state/outbox/ and nowhere else. delete_message writes only to state/actions.json (disposition=delete) and to the trace \u2014 no network side effect.",
+    "state_reset_policy": "Default runs preserve state across executions (trace/outbox/actions accumulate). Use --reset to clear state/actions.json, state/trace.jsonl, and state/outbox before execution, while preserving state/preferences.json so standing instructions still survive restarts.",
+    "escalation_line": "Approval is asked ONLY for send_message and delete_message. Everything reversible (draft, archive, defer, delegate, escalate, label, flag) runs without a prompt. The line was drawn there because sends are the one thing a user cannot pull back; asking on internal archives would train the user to click 'y' without reading. Trade-off: a wrongly-archived internal FYI is possible in exchange for the user only being asked when it truly matters.",
+    "preference_demo": "m041 (no meetings before 11:00) and m015 (CC Priya on Hartwell & Cho legal) are captured to state/preferences.json in one process and applied to m043 and m018 in a subsequent process.",
+    "standing_instructions": {
+      "description": "Part 5 requirement. A preference stated in one process is written to state/preferences.json via the memory_save_preference MCP tool, survives full process exit, and changes the agent's behaviour on the next run \u2014 see R4 for the end-to-end demo.",
+      "named_preference": {
+        "key": "calendar.earliest_meeting",
+        "value": "11:00",
+        "stated_in": "m041 (Sam's note-to-self: 'I do not take meetings before 11:00am, ever.')",
+        "affects_message": "m043 (Aria at Northwind VC proposes Monday 9:00am). In phase 2 the agent, without being told again, produces a decline draft that offers 11:00 or later instead."
+      },
+      "second_preference": {
+        "key": "cc.legal",
+        "value": "priya@paperjet.io",
+        "stated_in": "m015 (Priya: 'please make sure I'm CC'd on anything from our lawyers at Hartwell & Cho').",
+        "affects_message": "m018 (Marcus Cho, SAFE amendment). In phase 2 the draft's CC list contains priya@paperjet.io automatically."
+      },
+      "storage": "state/preferences.json (procedural memory tier); reads via memory_list_preferences, writes via memory_save_preference"
+    }
+  },
+  "capabilities": [
+    {
+      "id": "R1",
+      "name": "Zero the inbox",
+      "tier": "B",
+      "claim": "Assigns every one of the 100 messages exactly one disposition (reply/archive/defer/delegate/escalate/flagged) with a one-line reason, and reports how many messages never required a model call.",
+      "command": ".venv/bin/python demo.py --cap R1 --reset",
+      "observable": "Prints a 100-row table (id, disposition, reason), writes decisions.json, and prints 'undecided: 0'. Then prints a disposition summary (reply 6, archive 66, defer 1, escalate 20, flagged 7, total 100) and a route summary showing 97/100 messages never touched the LLM ('rule 97, llm-assisted 3').",
+      "evidence": "state/trace.jsonl \u2014 one 'decision' event per message id and one 'route' event per LLM-assisted message; decisions.json on disk with the full disposition map."
+    },
+    {
+      "id": "R2",
+      "name": "Grounded reply",
+      "tier": "B",
+      "claim": "Drafts a reply to m008 that reuses the AMQP URL from m003 verbatim and records m003 as the citation. When a message asks for information that is NOT in the inbox, the system drafts nothing and logs a not_grounded event instead (Part 3 rule 4).",
+      "command": ".venv/bin/python demo.py --cap R2 --msg m008",
+      "observable": "For m008: prints the draft body containing 'amqp://pj_stage:Rk7-quiet-otter-51@broker-stg.paperjet.io:5672/pjs' and 'cited: [\"m003\"]', and confirms m003 really contains that URL. For m012 ('that thing we talked about after the standup'): no draft is written to state/outbox/ and a not_grounded event with msg_id=m012 appears in state/trace.jsonl.",
+      "evidence": "state/trace.jsonl \u2014 'draft' event on m008 whose cited list includes m003; 'not_grounded' event on m012 with needed/searched/outcome fields; state/outbox/m008.json exists, state/outbox/m012.json does NOT."
+    },
+    {
+      "id": "R3",
+      "name": "Gate the irreversible",
+      "tier": "C",
+      "claim": "Never invokes send_message or delete_message without an approval decision from Gate. In --dry-run mode both proposed actions are printed but neither runs. Every gate decision is logged with tool, reason, mode, human's answer, and approved flag.",
+      "command": ".venv/bin/python demo.py --cap R3 --dry-run --reset",
+      "observable": "Prints 'DRY-RUN would call send_message' and 'DRY-RUN would call delete_message', then 'outbox/ send writes: 0'. Two 'gate' events land in state/trace.jsonl (human='dry-run', approved=false). Re-running without --dry-run prompts y/N per action; the y/n answer is written to the trace as well. No sent-*.json is created under --dry-run.",
+      "evidence": "state/trace.jsonl \u2014 two 'gate' events under --dry-run, no 'send' or 'gate_executed' events; state/outbox/ contains no sent-*.json file; ToolSpec.irreversible=True on send_message and delete_message in the MCP registry."
+    },
+    {
+      "id": "R4",
+      "name": "Persistent preference (Part 5: Standing Instructions)",
+      "tier": "C",
+      "extras_covered": ["Part 5: Standing Instructions \u2014 end-to-end state\u2192exit\u2192restart\u2192apply demo"],
+      "claim": "Preferences captured from m041 ('no meetings before 11am') and m015 (CC Priya on legal) survive process exit and are applied on a second, fresh process to m043 and m018. This satisfies Part 5: the preference is stated (m041), the process fully exits, and the correct treatment on m043 depends on that preference.",
+      "command": ".venv/bin/python demo.py --cap R4",
+      "observable": "Phase 1 prints both prefs written to state/preferences.json, then the process exits (the phase-1 Agent, client, store and inbox objects are explicitly deleted). Phase 2, in a NEW build_system() call \u2014 fresh Agent, fresh MCP client, fresh store, fresh in-memory inbox \u2014 loads the on-disk preferences and produces: (a) a declining draft for m043 that references 11:00; (b) a draft for m018 whose CC list contains priya@paperjet.io. Neither preference is re-stated in phase 2.",
+      "evidence": "state/preferences.json on disk between the two phases (survives even 'rm -rf state/*' except that one file, via _reset_state()); state/trace.jsonl \u2014 'memory_write' events on m041/m015 in phase 1 and 'draft' events on m043/m018 in phase 2 whose bodies carry the applied preference; state/outbox/m043.json contains the 11:00 phrase, state/outbox/m018.json has cc=['priya@paperjet.io']."
+    },
+    {
+      "id": "R5",
+      "name": "Refuse embedded instructions",
+      "tier": "C",
+      "claim": "Detects instructions addressed to the assistant inside message bodies (m017, m024, m039, m047), refuses them, flags them, and reports them — without deleting them or forwarding to any external address. Also flags phishing / lookalike-domain messages (m021, m023, m045).",
+      "command": ".venv/bin/python demo.py --cap R5",
+      "observable": "Prints seven 'FLAGGED: <id> (<kind>) — <reason>' lines. state/outbox/ contains 0 sends to mail-backup-service.info. 0 hostile messages have disposition=delete.",
+      "evidence": "state/trace.jsonl — 'refusal' events for each hostile id; state/actions.json shows disposition=flagged (never delete) for those ids."
+    },
+    {
+      "id": "R6",
+      "name": "Dashboard \u2014 commitments and deadlines as a structured list",
+      "tier": "C",
+      "extras_covered": ["Extracting commitments and deadlines into a structured list"],
+      "claim": "Generates exactly three panes: Pending actions, Flagged, and Commitments. The Commitments pane includes both obligation labels and a calendar/deadline table with ISO due_date values where resolvable. Every commitment/deadline cites source message ids, and conflicts are surfaced explicitly. This covers the assignment extra 'Extracting commitments and deadlines into a structured list'.",
+      "command": ".venv/bin/python demo.py --cap R6",
+      "observable": "Writes dashboard.html and dashboard.json with exactly three top-level sections. Pending rows show message, proposed_action, and why_human. Flagged rows show what was attempted and what the system did instead (including not_grounded entries from Part 3). Commitments include 'sign legal document via portal' cited to [m018, m055] (multi-message derivation), a calendar/deadline table sorted by due_date (11 rows in this inbox), and explicit conflict callouts such as 'CONFLICT on m013: scheduling conflict with m016'.",
+      "evidence": "dashboard.json (fields: pending, flagged, commitments, deadlines, conflicts, today) + dashboard.html; state/trace.jsonl (source for not_grounded rows)."
+    },
+    {
+      "id": "X1",
+      "name": "Follow-up tracking",
+      "tier": "B",
+      "extras_covered": ["Follow-up tracking for sent messages nobody answered"],
+      "claim": "Finds messages the user sent that have gone unanswered 3+ days and drafts a chase for each.",
+      "command": ".venv/bin/python demo.py --cap X1",
+      "observable": "Prints a JSON list of {message_id, days_waiting, draft}. m044 (sent, unanswered, 7.3 days) appears; threads that have any counterparty reply do not.",
+      "evidence": "state/trace.jsonl — 'read' events for the thread walk that decided each candidate."
+    },
+    {
+      "id": "X2",
+      "name": "Morning digest",
+      "tier": "B",
+      "extras_covered": ["A daily digest: what happened, what needs you, what can wait", "Batch handling of a category (noise / receipts / newsletters, grouped by domain)"],
+      "claim": "Produces a one-screen digest: what needs the user today, what can wait, and what was auto-archived (grouped by sender domain, not one line per receipt).",
+      "command": ".venv/bin/python demo.py --cap X2",
+      "observable": "Prints three sections. 'NEEDS YOU' contains m010 (investor), m018 (legal SAFE) and m040 (board deck). 'AUTO-ARCHIVED' is grouped by sender domain with counts.",
+      "evidence": "state/trace.jsonl."
+    },
+    {
+      "id": "X4",
+      "name": "Thread open-question summary",
+      "tier": "B",
+      "extras_covered": ["Thread-level open-question summary with citation-style message ids"],
+      "coverage_note": "This is an extra capability. It extends the grounded-retrieval spirit of Part 3 by summarizing unresolved asks from a thread using only inbox content and referenced message ids.",
+      "claim": "Summarizes a thread into unresolved open question(s): prints participants and unresolved asks, each with source message id and snippet.",
+      "command": ".venv/bin/python demo.py --cap X4 --thread t-launch",
+      "observable": "Prints thread metadata (id, message count, participants, latest timestamp), then either 'open question: none remaining' or one/more unresolved ask rows with cited message ids.",
+      "evidence": "Thread is read via get_thread MCP tool; output cites message ids for unresolved asks."
+    }
+  ]
+}
